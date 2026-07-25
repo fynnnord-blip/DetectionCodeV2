@@ -61,14 +61,17 @@ COLOR_RANGES = {
 
 ARROW_REGIONS = {"left_arrow": "green", "right_arrow": "green"}
 
-# Autopilot yoke icon spec, derived from measuring actual sample crops:
-# both reference images clustered tightly around hue ~115-130 (a deep
-# blue), and the brightest ("white" yoke) pixels stayed fairly saturated
-# rather than reading as pure white in dark/underexposed footage.
+# Autopilot yoke icon spec. Blue range below is field-calibrated against
+# real nighttime footage: a high saturation floor (180) is what actually
+# separates true blue from gray dashboard noise at night -- grays read as
+# low-saturation regardless of brightness, so a saturation floor rules them
+# out far better than a hue range alone. The value range is also capped
+# (not just floored) since the calibrated blue itself stays fairly dim.
 AUTOPILOT_SPEC = {
-    "blue_hue": (100, 145),
-    "min_sat": 60,
-    "min_val": 15,           # low floor -- real footage can be quite dark
+    "blue_hue": (115, 135),
+    "min_sat": 180,
+    "min_val": 5,
+    "max_val": 112,
     "min_blue_fraction": 0.40,   # region must be mostly this blue overall
     "brightness_contrast_ratio": 1.3,  # "bright shape" must exceed this x the blue background's median brightness
     "min_bright_fraction": 0.04,       # at least this much of the region must be that much brighter (the yoke)
@@ -126,7 +129,8 @@ def autopilot_icon_score(frame, roi: dict) -> dict:
 
     blue_mask = (
         (h_ch >= spec["blue_hue"][0]) & (h_ch <= spec["blue_hue"][1]) &
-        (s_ch >= spec["min_sat"]) & (v_ch >= spec["min_val"])
+        (s_ch >= spec["min_sat"]) &
+        (v_ch >= spec["min_val"]) & (v_ch <= spec["max_val"])
     )
     blue_fraction = float(np.count_nonzero(blue_mask)) / blue_mask.size
 
