@@ -2,18 +2,20 @@
 step3_basic_detection.py
 
 Builds on step2: loads the regions you selected (rois.json) and, for each
-frame, computes the average brightness inside each box and compares it to
-a single fixed threshold. That's it -- no blink-pattern logic, no adaptive
-baseline, no color classification yet. The goal here is just to prove the
-core measurement works and watch the raw numbers move in response to real
-footage before we add any smarter behavior on top.
+frame, checks each region for a specific color instead of just brightness
+-- turn arrows are green, the Autopilot icon is blue. For each region we
+compute what fraction of its pixels fall inside that color's hue range
+(with a saturation/value floor so we don't match grayish background
+noise), and call it "lit" once enough of the box matches. Still no
+blink-pattern logic or adaptive baseline yet -- just proving color
+matching works before we add anything smarter on top.
 
 The Autopilot icon has two possible positions (autopilot_1, autopilot_2);
 either one reading "lit" counts as Autopilot being shown.
 
 Usage:
     python step3_basic_detection.py --video my_footage.mp4 --rois rois.json
-    python step3_basic_detection.py --video my_footage.mp4 --rois rois.json --threshold 150
+    python step3_basic_detection.py --video my_footage.mp4 --rois rois.json --color-fraction 0.15
 """
 
 from __future__ import annotations
@@ -24,12 +26,30 @@ import time
 from collections import deque
 
 import cv2
+import numpy as np
 
 BOX_COLORS = {
     "left_arrow": (0, 255, 0),
     "right_arrow": (0, 255, 255),
     "autopilot_1": (255, 0, 0),
     "autopilot_2": (255, 0, 255),
+}
+
+# Which target color each region is looking for, and the HSV hue range
+# (OpenCV's 0-179 hue scale) plus minimum saturation/value that counts as
+# "that color" rather than gray background noise. Widen/shift these if your
+# footage's actual green/blue lands outside the defaults -- easiest to tune
+# by watching the printed hue value while pointing at a known-lit icon.
+COLOR_RANGES = {
+    "green": {"hue": (40, 85), "min_sat": 60, "min_val": 60},
+    "blue": {"hue": (95, 135), "min_sat": 60, "min_val": 60},
+}
+
+REGION_TARGET_COLOR = {
+    "left_arrow": "green",
+    "right_arrow": "green",
+    "autopilot_1": "blue",
+    "autopilot_2": "blue",
 }
 
 
@@ -48,21 +68,26 @@ class FpsCounter:
         return (len(self._timestamps) - 1) / span
 
 
-def brightness(frame, roi: dict) -> float:
+def color_fraction(frame, roi: dict, color_name: str) -> float:
+    """Fraction (0-1) of pixels in the ROI matching the target hue range."""
     x, y, w, h = roi["x"], roi["y"], roi["w"], roi["h"]
     crop = frame[y:y + h, x:x + w]
     if crop.size == 0:
         return 0.0
+    spec = COLOR_RANGES[color_name]
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    return float(hsv[:, :, 2].mean())
+    lower = np.array([spec["hue"][0], spec["min_sat"], spec["min_val"]])
+    upper = np.array([spec["hue"][1], 255, 255])
+    mask = cv2.inRange(hsv, lower, upper)
+    return float(np.count_nonzero(mask)) / mask.size
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", required=True, help="Path to a .mov or .mp4 file")
     parser.add_argument("--rois", default="rois.json", help="Regions saved by step2_select_rois.py")
-    parser.add_argument("--threshold", type=float, default=150.0,
-                         help="Fixed brightness threshold (0-255) to call a region 'lit'")
+    parser.add_argument("--color-fraction", type=float, default=0.15,
+                         help="Minimum fraction (0-1) of a region that must match its target color to call it 'lit'")
     args = parser.parse_args()
 
     with open(args.rois) as f:
@@ -79,7 +104,7 @@ def main():
     frame_delay = 1.0 / fps
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     print(f"Opened {args.video}: {fps:.1f} fps, {total_frames} frames. "
-          f"Threshold={args.threshold}. Space=pause, N=step, Q/ESC=quit.")
+          f"Color fraction threshold={args.color_fraction}. Space=pause, N=step, Q/ESC=quit.")
 
     paused = False
     frame_index = 0
@@ -101,8 +126,9 @@ def main():
         display = frame.copy()
         readings = {}
         for name, roi in rois.items():
-            value = brightness(frame, roi)
-            lit = value > args.threshold
+            target_color = REGION_TARGET_COLOR.get(name, "green")
+            value = color_fraction(frame, roi, target_color)
+            lit = value > args.color_fraction
             readings[name] = (value, lit)
 
             color = BOX_COLORS.get(name, (200, 200, 200))
@@ -123,7 +149,7 @@ def main():
                     (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, fps_color, 2)
         y_off += 25
         for name, (value, lit) in readings.items():
-            text = f"{name}: {value:.0f}  {'LIT' if lit else '-'}"
+            text = f"{name}: {value * 100:.0f}%  {'LIT' if lit else '-'}"
             color = (0, 255, 0) if lit else (180, 180, 180)
             cv2.putText(display, text, (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1)
             y_off += 20
