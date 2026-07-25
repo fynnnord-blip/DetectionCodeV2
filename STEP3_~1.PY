@@ -168,8 +168,17 @@ def main():
             x, y, w, h = roi["x"], roi["y"], roi["w"], roi["h"]
             cv2.rectangle(display, (x, y), (x + w, y + h), box_color, 2 if lit else 1)
 
-        autopilot_lit = readings.get("autopilot_1", (0, False))[1] or \
-            readings.get("autopilot_2", (0, False))[1]
+        # When a turn signal is active, the dashboard swaps a live blind-spot
+        # camera feed into the autopilot_2 position -- which can contain real
+        # blue objects (a car, sky, signage) and falsely read as Autopilot.
+        # The real Autopilot icon can only still be showing in autopilot_1
+        # during a turn signal, so autopilot_2 is ignored while one is active.
+        turn_signal_active = readings.get("left_arrow", (0, False))[1] or \
+            readings.get("right_arrow", (0, False))[1]
+
+        autopilot_1_lit = readings.get("autopilot_1", (0, False))[1]
+        autopilot_2_lit = readings.get("autopilot_2", (0, False))[1] and not turn_signal_active
+        autopilot_lit = autopilot_1_lit or autopilot_2_lit
 
         y_off = 25
         cv2.putText(display, f"frame {frame_index}/{total_frames}"
@@ -181,8 +190,12 @@ def main():
                     (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, fps_color, 2)
         y_off += 25
         for name, (value, lit) in readings.items():
-            text = f"{name}: {value * 100:.0f}%  {'LIT' if lit else '-'}"
-            color = (0, 255, 0) if lit else (180, 180, 180)
+            if name == "autopilot_2" and turn_signal_active:
+                text = f"{name}: {value * 100:.0f}%  (ignored - turn signal active)"
+                color = (100, 100, 100)
+            else:
+                text = f"{name}: {value * 100:.0f}%  {'LIT' if lit else '-'}"
+                color = (0, 255, 0) if lit else (180, 180, 180)
             cv2.putText(display, text, (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1)
             y_off += 20
         cv2.putText(display, f"AUTOPILOT: {'ON' if autopilot_lit else 'off'}",
