@@ -114,24 +114,47 @@ def main():
 
     print(f"Opened {args.video}: {fps:.1f} fps, {total_frames} frames "
           f"({total_frames / fps:.1f}s).")
-    print("Space=pause, N=step, R=select regions on current frame, S=save regions, Q/ESC=quit.")
+    print("Space=pause, N/B=step fwd/back, drag slider to scrub, "
+          "R=select regions on current frame, S=save regions, Q/ESC=quit.")
+
+    window_name = "step2: region selection + verification"
+    cv2.namedWindow(window_name)
+    cv2.createTrackbar("frame", window_name, 0, max(total_frames - 1, 1), lambda v: None)
 
     paused = False
     frame_index = 0
     frame = None
     fps_counter = FpsCounter()
     achieved_fps = 0.0
+    last_synced_position = 0
+
+    def seek_to(target_frame: int):
+        nonlocal frame, frame_index, last_synced_position
+        target_frame = max(0, min(target_frame, total_frames - 1))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        ok, new_frame = cap.read()
+        if ok:
+            frame = new_frame
+            frame_index = target_frame + 1
+        cv2.setTrackbarPos("frame", window_name, min(frame_index, total_frames - 1))
+        last_synced_position = min(frame_index, total_frames - 1)
 
     while True:
         loop_start = time.monotonic()
 
-        if not paused or frame is None:
+        slider_position = cv2.getTrackbarPos("frame", window_name)
+        if slider_position != last_synced_position:
+            paused = True
+            seek_to(slider_position)
+        elif not paused or frame is None:
             ok, frame = cap.read()
             if not ok:
                 print("End of video.")
                 break
             frame_index += 1
             achieved_fps = fps_counter.tick()
+            cv2.setTrackbarPos("frame", window_name, min(frame_index, total_frames - 1))
+            last_synced_position = min(frame_index, total_frames - 1)
 
         display = draw_rois(frame, rois)
         cv2.putText(display, f"frame {frame_index}/{total_frames}"
@@ -140,7 +163,7 @@ def main():
         fps_color = (0, 255, 0) if achieved_fps >= fps * 0.95 else (0, 0, 255)
         cv2.putText(display, f"source: {fps:.1f} fps  |  actual: {achieved_fps:.1f} fps",
                     (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, fps_color, 2)
-        cv2.imshow("step2: region selection + verification", display)
+        cv2.imshow(window_name, display)
 
         key = cv2.waitKey(1) & 0xFF
         if key in (ord('q'), 27):
@@ -148,11 +171,9 @@ def main():
         elif key == ord(' '):
             paused = not paused
         elif key == ord('n') and paused:
-            ok, frame = cap.read()
-            if not ok:
-                print("End of video.")
-                break
-            frame_index += 1
+            seek_to(frame_index)
+        elif key == ord('b') and paused:
+            seek_to(frame_index - 2)
         elif key == ord('r'):
             if not paused:
                 paused = True

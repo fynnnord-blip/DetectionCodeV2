@@ -13,6 +13,13 @@ matching works before we add anything smarter on top.
 The Autopilot icon has two possible positions (autopilot_1, autopilot_2);
 either one reading "lit" counts as Autopilot being shown.
 
+Controls:
+    SPACE       - pause / resume
+    N           - step forward one frame (while paused)
+    B           - step backward one frame (while paused)
+    drag slider - scrub to any point in the clip (auto-pauses)
+    Q/ESC       - quit
+
 Usage:
     python step3_basic_detection.py --video my_footage.mp4 --rois rois.json
     python step3_basic_detection.py --video my_footage.mp4 --rois rois.json --color-fraction 0.15
@@ -104,24 +111,49 @@ def main():
     frame_delay = 1.0 / fps
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     print(f"Opened {args.video}: {fps:.1f} fps, {total_frames} frames. "
-          f"Color fraction threshold={args.color_fraction}. Space=pause, N=step, Q/ESC=quit.")
+          f"Color fraction threshold={args.color_fraction}. "
+          f"Space=pause, N/B=step fwd/back, drag slider to scrub, Q/ESC=quit.")
+
+    window_name = "step3: basic threshold detection"
+    cv2.namedWindow(window_name)
+    cv2.createTrackbar("frame", window_name, 0, max(total_frames - 1, 1), lambda v: None)
 
     paused = False
     frame_index = 0
     frame = None
     fps_counter = FpsCounter()
     achieved_fps = 0.0
+    last_synced_position = 0  # trackbar position we last set programmatically
+
+    def seek_to(target_frame: int):
+        """Move playback to `target_frame` (0-based) and read that frame."""
+        nonlocal frame, frame_index, last_synced_position
+        target_frame = max(0, min(target_frame, total_frames - 1))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        ok, new_frame = cap.read()
+        if ok:
+            frame = new_frame
+            frame_index = target_frame + 1
+        cv2.setTrackbarPos("frame", window_name, min(frame_index, total_frames - 1))
+        last_synced_position = min(frame_index, total_frames - 1)
 
     while True:
         loop_start = time.monotonic()
 
-        if not paused or frame is None:
+        slider_position = cv2.getTrackbarPos("frame", window_name)
+        if slider_position != last_synced_position:
+            # user dragged the slider -- treat as a scrub/seek request
+            paused = True
+            seek_to(slider_position)
+        elif not paused or frame is None:
             ok, frame = cap.read()
             if not ok:
                 print("End of video.")
                 break
             frame_index += 1
             achieved_fps = fps_counter.tick()
+            cv2.setTrackbarPos("frame", window_name, min(frame_index, total_frames - 1))
+            last_synced_position = min(frame_index, total_frames - 1)
 
         display = frame.copy()
         readings = {}
@@ -157,7 +189,7 @@ def main():
                     (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     (255, 0, 0) if autopilot_lit else (150, 150, 150), 2)
 
-        cv2.imshow("step3: basic threshold detection", display)
+        cv2.imshow(window_name, display)
 
         key = cv2.waitKey(1) & 0xFF
         if key in (ord('q'), 27):
@@ -165,11 +197,9 @@ def main():
         elif key == ord(' '):
             paused = not paused
         elif key == ord('n') and paused:
-            ok, frame = cap.read()
-            if not ok:
-                print("End of video.")
-                break
-            frame_index += 1
+            seek_to(frame_index)  # frame_index is already "next frame to read" - 1 off by design of seek_to
+        elif key == ord('b') and paused:
+            seek_to(frame_index - 2)  # -2: undo the current frame and step one further back
 
         if not paused:
             elapsed = time.monotonic() - loop_start
